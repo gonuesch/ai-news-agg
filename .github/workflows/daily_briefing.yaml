@@ -1,0 +1,40 @@
+name: Tägliches AI-Briefing
+
+on:
+  # 1. Zeitgesteuert: Jeden Tag um 7:00 Uhr UTC (entspricht 8:00 Uhr MEZ)
+  schedule:
+    - cron: '0 7 * * *'
+  
+  # 2. Manuell: Zum Testen einen "Run workflow" Button in der Actions-UI
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest # Verwendet einen Linux-Server
+    
+    steps:
+      # Schritt 1: Code auschecken
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Schritt 2: Python 3.10 (oder neuer) aufsetzen
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' 
+
+      # Schritt 3: Python-Abhängigkeiten installieren
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Schritt 4: Das Python-Skript ausführen
+      - name: Run AI News Aggregator
+        env:
+          # Hier werden die Secrets sicher an das Skript übergeben
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python main.py
