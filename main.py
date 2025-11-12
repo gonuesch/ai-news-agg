@@ -125,7 +125,7 @@ def summarize_with_gemini(raw_text):
         genai.configure(api_key=GEMINI_API_KEY)
         # Wir verwenden 'gemini-1.5-flash', da es schnell ist und ein großes
         # Kontextfenster hat, falls du viele Artikel findest.
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
 
         # Der Prompt ist der wichtigste Teil!
         # dedent() entfernt die Einrückungen aus dem String für einen sauberen Prompt.
