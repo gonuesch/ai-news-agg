@@ -4,12 +4,12 @@ import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta, timezone
 from textwrap import dedent
+import time
 
 # --------------------------------------------------------------------------
-# SCHRITT 1: Konfiguration (API-Schlüssel)
+# Konfiguration (API-Schlüssel)
 # --------------------------------------------------------------------------
-# Diese liest das Skript aus den "Umgebungsvariablen".
-# In GitHub Actions nennst du sie "Secrets".
+
 try:
     GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
     TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -20,7 +20,7 @@ except KeyError as e:
     exit(1) # Beendet das Skript, wenn Schlüssel fehlen
 
 # --------------------------------------------------------------------------
-# SCHRITT 2: Deine Feed-Quellen
+# Feed-Quellen
 # --------------------------------------------------------------------------
 FEEDS = {
     "KI Allgemein (Global)": [
@@ -115,7 +115,7 @@ def get_recent_news():
 # --------------------------------------------------------------------------
 def summarize_with_gemini(raw_text):
     """
-    Sendet den Rohtext an die Gemini API und bittet um eine Zusammenfassung.
+    Sendet den Rohtext an die Gemini API und bittet um eine saubere Zusammenfassung.
     """
     if not raw_text:
         print("Kein Rohtext zum Zusammenfassen vorhanden.")
@@ -123,32 +123,37 @@ def summarize_with_gemini(raw_text):
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        # Wir verwenden 'gemini-1.5-flash', da es schnell ist und ein großes
-        # Kontextfenster hat, falls du viele Artikel findest.
         model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # Der Prompt ist der wichtigste Teil!
-        # dedent() entfernt die Einrückungen aus dem String für einen sauberen Prompt.
+        # === VERBESSERTER PROMPT ===
+        # Dieser Prompt zwingt Gemini zu einer besseren Struktur
+        # mit Überschriften und Aufzählungspunkten für die Links.
         prompt = dedent(f"""
         Hallo. Du bist ein Redakteur für ein tägliches AI-Briefing.
 
         AUFGABE:
-        Analysiere die folgenden Artikel-Snippets, die ich gesammelt habe. Ignoriere Duplikate oder unwichtige Meldungen.
-        Die Kategorien (z.B. "[KATEGORIE]: Fokus: Gemini") sind zur Orientierung.
+        Analysiere die folgenden Artikel-Snippets.
+        1.  Identifiziere die 3 bis 5 wichtigsten Themen des Tages.
+        2.  Schreibe für jedes Thema eine *zusammenfassende Überschrift in Fett*.
+        3.  Schreibe darunter eine kurze, neutrale Zusammenfassung (2-3 Sätze).
+        4.  Liste *danach* die relevanten Quell-Links als Markdown-Aufzählungspunkte (z.B. `* [Titel des Artikels](URL)`).
+        5.  Trenne die einzelnen Themenblöcke mit einer Leerzeile (wichtig für die spätere Aufteilung).
 
-        1.  Identifiziere die 3 bis 5 wichtigsten Themen oder Durchbrüche des Tages.
-        2.  Schreibe für jedes Thema eine kurze, neutrale Zusammenfassung (2-3 Sätze).
-        3.  Liste unter jeder Zusammenfassung die Links zu den Originalartikeln auf, die dieses Thema behandeln.
-        4.  Wenn es keine wichtigen News gibt, schreibe "Es gab heute keine nennenswerten AI-News."
+        Formatiere die gesamte Ausgabe als sauberes Telegram-Markdown.
+        Beginne direkt mit der ersten Überschrift.
 
-        Formatiere die gesamte Ausgabe als sauberes Telegram-Markdown (verwende *fett*, _kursiv_, [Text](URL), aber keine Markdown-Überschriften #).
-        Beginne direkt mit dem ersten Thema.
+        Beispiel-Format für ein Thema:
+        *Neues KI-Modell von Google veröffentlicht*
+        Google hat heute Modell "XYZ" vorgestellt, das besser als GPT-4 ist. Es ist multimodal und...
+        * [Google Blog: Das neue Modell](https://link.com/1)
+        * [TechCrunch: Analyse von XYZ](https://link.com/2)
+        
+        (Hier wäre eine Leerzeile zum nächsten Thema)
 
         HIER SIND DIE HEUTIGEN ROHDATEN:
         ---
         {raw_text}
         ---
-        ENDE DER ROHDATEN.
         """)
 
         print("Sende Rohtext an Gemini API...")
@@ -162,34 +167,106 @@ def summarize_with_gemini(raw_text):
         return f"Fehler bei der Erstellung der Zusammenfassung: {e}"
 
 # --------------------------------------------------------------------------
-# FUNKTION 3: An Telegram senden
+# FUNKTION 3: An Telegram senden (VERBESSERTE VERSION MIT "CHUNKING")
 # --------------------------------------------------------------------------
-def send_to_telegram(message_text):
+def send_to_telegram(message_text, chat_id=TELEGRAM_CHAT_ID, bot_token=TELEGRAM_BOT_TOKEN):
     """
     Sendet die finale Nachricht an deine Telegram Chat ID.
+    Teilt die Nachricht automatisch in mehrere "Chunks", wenn sie zu lang ist.
     """
     print("Sende Nachricht an Telegram...")
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     
-    # Telegram hat ein Limit von 4096 Zeichen pro Nachricht
-    if len(message_text) > 4096:
-        print("Warnung: Nachricht ist länger als 4096 Zeichen. Kürze...")
-        message_text = message_text[:4090] + "\n... (Nachricht gekürzt)"
+    # Telegrams offizielles Limit
+    MAX_LENGTH = 4096
+    
+    # Header-Text (wird der ersten Nachricht vorangestellt)
+    # Hole das Datum (Logik aus der alten 'main'-Funktion hierher verschoben)
+    utc_now = datetime.now(timezone.utc)
+    try:
+        import zoneinfo
+        local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
+    except ImportError:
+        local_tz = timezone(timedelta(hours=1)) # Fallback
 
+    local_time = utc_now.astimezone(local_tz)
+    today_date = local_time.strftime("%d. %B %Y")
+    
+    header = f"🤖 *Dein AI-Briefing für {today_date}*\n\n"
+    
+    # Füge den Header zur Nachricht hinzu
+    full_message = header + message_text
+
+    # --- Die "Chunking"-Logik ---
+    
+    if len(full_message) <= MAX_LENGTH:
+        # Nachricht ist kurz genug, sende sie als Ganzes
+        _send_telegram_message(url, full_message, chat_id)
+        print("Nachricht (1/1) erfolgreich gesendet.")
+        return
+
+    print(f"Nachricht ist zu lang ({len(full_message)} Zeichen). Starte 'Chunking'...")
+    
+    # Die Nachricht ist zu lang. Wir teilen sie.
+    # Wir senden den Header IMMER als separate erste Nachricht.
+    _send_telegram_message(url, header, chat_id)
+    time.sleep(1) # Kurze Pause, damit die Reihenfolge stimmt
+    
+    chunks = []
+    current_chunk = ""
+    
+    # Wir teilen die Nachricht an den doppelten Umbrüchen (Themen-Trenner)
+    # (Der neue Prompt stellt sicher, dass diese existieren)
+    message_blocks = message_text.split('\n\n')
+    
+    for i, block in enumerate(message_blocks):
+        # Prüfen, ob der nächste Block + Umbruch noch in den aktuellen Chunk passt
+        if len(current_chunk) + len(block) + 2 <= MAX_LENGTH:
+            current_chunk += block + '\n\n'
+        else:
+            # Der Chunk ist voll. Speichern und einen neuen starten.
+            if current_chunk: # Speichere den alten Chunk (kann beim ersten Block leer sein)
+                chunks.append(current_chunk)
+            
+            if len(block) > MAX_LENGTH:
+                # Sonderfall: Ein einzelner Block ist zu lang. Hart kürzen.
+                print(f"Warnung: Ein einzelner Themenblock ist > {MAX_LENGTH} Zeichen. Kürze...")
+                chunks.append(block[:MAX_LENGTH - 10] + "\n...(gekürzt)")
+                current_chunk = "" # Starte leer
+            else:
+                # Starte einen neuen Chunk mit dem aktuellen Block
+                current_chunk = block + '\n\n'
+
+    # Füge den letzten verbleibenden Chunk hinzu
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    # Sende alle Chunks nacheinander
+    total_chunks = len(chunks)
+    for i, chunk in enumerate(chunks):
+        print(f"Sende Chunk {i+1}/{total_chunks}...")
+        _send_telegram_message(url, chunk, chat_id)
+        time.sleep(1) # Kurze Pause zwischen den Nachrichten
+
+    print("Alle Chunks erfolgreich gesendet.")
+
+
+def _send_telegram_message(url, message_text, chat_id):
+    """
+    Private Hilfsfunktion, die die eigentliche Sende-Anfrage durchführt.
+    """
     payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
+        'chat_id': chat_id,
         'text': message_text,
-        'parse_mode': 'Markdown', # Wichtig, damit *fett* etc. gerendert wird
-        'disable_web_page_preview': True # Mache die Nachricht sauberer
+        'parse_mode': 'Markdown',
+        'disable_web_page_preview': True
     }
     
     try:
         response = requests.post(url, data=payload)
-        if response.status_code == 200:
-            print("Nachricht erfolgreich an Telegram gesendet.")
-        else:
+        if response.status_code != 200:
             print(f"!! FEHLER beim Senden an Telegram: {response.status_code}")
-            print(response.json()) # Zeigt die Fehlerantwort von Telegram
+            print(response.json())
     except Exception as e:
         print(f"!! FEHLER bei der Telegram-Anfrage: {e}")
 
