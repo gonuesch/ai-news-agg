@@ -107,39 +107,45 @@ def collect_news_for_category(urls, category_name):
     return "".join(rohtext_snippets)
 
 # --------------------------------------------------------------------------
-# FUNKTION 2: Mit Gemini KATEGORIE zusammenfassen
-# (Dies ist ein NEUER Prompt)
+# FUNKTION 2: Mit Gemini KATEGORIE zusammenfassen (NEUE, STRIKTE VERSION)
 # --------------------------------------------------------------------------
 def summarize_category_with_gemini(raw_text, category_name):
     """
     Sendet den KATEGORIE-Rohtext an die Gemini API und bittet um eine Zusammenfassung.
+    NEU: Mit strikten Längen-Limits, um 4096-Zeichen-Fehler zu vermeiden.
     """
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # === VERBESSERTER PROMPT ===
-        # Fokussiert auf die Zusammenfassung einer *einzelnen* Kategorie
+        # === NEUER, STRIKTER PROMPT ===
+        # Dieser Prompt zwingt Gemini, sich kurz zu fassen.
         prompt = dedent(f"""
-        Hallo. Du bist ein Redakteur. Deine Aufgabe ist es, die folgenden News-Snippets für die Kategorie "{category_name}" zusammenzufassen.
+        Hallo Redakteur. Deine Aufgabe ist es, die News-Snippets für die Kategorie "{category_name}" zusammenzufassen.
+
+        WICHTIGE REGELN:
+        1.  Die gesamte Antwort MUSS UNTER 3500 ZEICHEN bleiben. Das ist ein hartes technisches Limit.
+        2.  Fasse dich extrem kurz. Wähle nur die 1 oder 2 absolut wichtigsten Themen aus.
+        3.  Pro Thema, liste MAXIMAL 3-4 der relevantesten Quell-Links auf. Ignoriere alle anderen Links.
 
         AUFGABE:
-        1.  Identifiziere die 1-3 wichtigsten Themenblöcke *innerhalb dieser Snippets*.
+        1.  Identifiziere die 1-2 wichtigsten Themen.
         2.  Schreibe für jedes Thema eine *zusammenfassende Überschrift in Fett*.
-        3.  Schreibe darunter eine kurze, neutrale Zusammenfassung (2-3 Sätze).
-        4.  Liste *danach* die relevanten Quell-Links als Markdown-Aufzählungspunkte (z.B. `* [Titel des Artikels](URL)`).
-        5.  Wenn es keine wichtigen News gibt (z.B. nur Müll oder irrelevante Updates), antworte *nur* mit dem Text: "Keine nennenswerten News".
+        3.  Schreibe darunter eine sehr kurze Zusammenfassung (1-2 Sätze).
+        4.  Liste *danach* die relevanten Quell-Links (MAXIMAL 3-4 pro Thema) als Markdown-Aufzählungspunkte (`* [Titel](URL)`).
+        5.  Wenn es keine wichtigen News gibt, antworte *nur* mit dem Text: "Keine nennenswerten News".
 
-        Formatiere die gesamte Ausgabe als sauberes Telegram-Markdown.
-        Beginne direkt mit der ersten Überschrift.
+        Formatiere als sauberes Telegram-Markdown. Beginne direkt mit der ersten Überschrift.
 
-        HIER SIND DIE ROHDATEN:
+        HIER SIND DIE ROHDATEN (kann sehr viel sein, filtere aggressiv):
         ---
-        {raw_text}
+        {raw_text[:20000]} 
         ---
         """)
+        # WICHTIG: Ich kürze den INPUT-Text auf 20.000 Zeichen, falls du
+        # Hunderte von Artikeln findest. Das spart Tokens und verhindert API-Fehler.
 
-        print(f"Sende Rohtext für {category_name} an Gemini API...")
+        print(f"Sende Rohtext für {category_name} an Gemini API (Input gekürzt auf 20k Zeichen)...")
         response = model.generate_content(prompt)
         
         print("Antwort von Gemini erhalten.")
@@ -148,7 +154,6 @@ def summarize_category_with_gemini(raw_text, category_name):
     except Exception as e:
         print(f"!! FEHLER bei der Gemini API: {e}")
         return f"Fehler bei der Erstellung der Zusammenfassung für {category_name}: {e}"
-
 # --------------------------------------------------------------------------
 # FUNKTION 3: An Telegram senden (VERBESSERTE CHUNKING-LOGIK)
 # --------------------------------------------------------------------------
