@@ -155,13 +155,13 @@ def summarize_category_with_gemini(raw_text, category_name):
         print(f"!! FEHLER bei der Gemini API: {e}")
         return f"Fehler bei der Erstellung der Zusammenfassung für {category_name}: {e}"
 # --------------------------------------------------------------------------
-# FUNKTION 3: An Telegram senden (VERBESSERTE CHUNKING-LOGIK)
+# FUNKTION 3: An Telegram senden (ROBUSTE VERSION MIT FALLBACK)
 # --------------------------------------------------------------------------
 def send_to_telegram(message_text, chat_id=TELEGRAM_CHAT_ID, bot_token=TELEGRAM_BOT_TOKEN):
     """
-    Sendet die finale Nachricht an deine Telegram Chat ID.
-    Teilt die Nachricht automatisch in mehrere "Chunks", wenn sie zu lang ist.
-    Behandelt Markdown-Parsing-Fehler bei Kürzungen.
+    Sendet die finale Nachricht. Teilt, wenn nötig.
+    NEU: Baut ein Fallback-System, das als reiner Text sendet,
+    falls das Markdown-Parsing fehlschlägt.
     """
     print("Sende Nachricht an Telegram...")
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -170,62 +170,78 @@ def send_to_telegram(message_text, chat_id=TELEGRAM_CHAT_ID, bot_token=TELEGRAM_
     full_message = message_text
 
     if len(full_message) <= MAX_LENGTH:
-        # Nachricht ist kurz genug, sende sie als Ganzes mit Markdown
-        _send_telegram_message(url, full_message, chat_id, parse_mode='Markdown')
-        print("Nachricht (1/1) erfolgreich gesendet.")
+        # Nachricht ist kurz genug. Versuche, sie als Ganzes zu senden.
+        status = _send_telegram_message(url, full_message, chat_id, parse_mode='Markdown')
+        
+        if status == True:
+            print("Nachricht (1/1) erfolgreich gesendet (mit Markdown).")
+        elif status == "PARSE_ERROR":
+            # Markdown schlug fehl, versuche als reinen Text
+            print("Markdown-Fehler. Versuche erneut als reinen Text...")
+            status_plain = _send_telegram_message(url, full_message, chat_id, parse_mode='None')
+            if status_plain == True:
+                print("Nachricht (1/1) erfolgreich gesendet (als reiner Text).")
+            else:
+                print("!! FEHLER: Senden als reiner Text ist ebenfalls fehlgeschlagen.")
+        else:
+            # Anderer Fehler
+            print("!! FEHLER: Senden ist fehlgeschlagen.")
         return
 
+    # --- CHUNKING-LOGIK (bleibt gleich, aber mit besserem Logging) ---
     print(f"Nachricht ist zu lang ({len(full_message)} Zeichen). Starte 'Chunking'...")
-    
-    # Wir erstellen eine Liste von (text, parse_mode) Tupeln
     chunks = []
     current_chunk_text = ""
-    current_parse_mode = 'Markdown' # Standard ist Markdown
-
+    
     message_blocks = message_text.split('\n---\n')
     
     for i, block in enumerate(message_blocks):
         block_to_add = block + '\n---\n' if i < len(message_blocks) - 1 else block
         
+        # Bestimme den Parse-Modus für diesen Block
+        parse_mode = 'Markdown'
+        if len(block_to_add) > MAX_LENGTH:
+            print(f"Warnung: Ein einzelner Kategorie-Block ist > {MAX_LENGTH} Zeichen. Kürze...")
+            block_to_add = block_to_add[:MAX_LENGTH - 20] + "\n...(gekürzt)"
+            parse_mode = 'None' # Gekürzte Blöcke als reinen Text senden
+
+        # Chunking-Logik
         if len(current_chunk_text) + len(block_to_add) <= MAX_LENGTH:
             current_chunk_text += block_to_add
         else:
-            # Der aktuelle Chunk ist voll. Speichere ihn.
             if current_chunk_text:
-                chunks.append((current_chunk_text, current_parse_mode))
-            
-            # Jetzt den neuen Block behandeln
-            if len(block_to_add) > MAX_LENGTH:
-                # *** HIER IST DIE NEUE LOGIK ***
-                print(f"Warnung: Ein einzelner Kategorie-Block ist > {MAX_LENGTH} Zeichen. Kürze...")
-                # Kürze den Text und setze den Parse-Modus auf 'None' (reiner Text)
-                truncated_text = block_to_add[:MAX_LENGTH - 20] + "\n...(gekürzt)"
-                chunks.append((truncated_text, 'None')) # Sende diesen Chunk als reinen Text
-                current_chunk_text = "" # Starte einen leeren Chunk für die nächste Runde
-            else:
-                # Starte einen normalen neuen Chunk
-                current_chunk_text = block_to_add
-                current_parse_mode = 'Markdown'
+                # Speichere den alten Chunk (mit dem Parse-Modus des *vorherigen* Blocks)
+                chunks.append((current_chunk_text, 'Markdown')) 
+            current_chunk_text = block_to_add
 
-    # Füge den letzten verbleibenden Chunk hinzu
     if current_chunk_text:
-        chunks.append((current_chunk_text, current_parse_mode))
+        chunks.append((current_chunk_text, parse_mode))
 
-    # Sende alle vorbereiteten Chunks nacheinander
+    # Sende alle Chunks nacheinander
     total_chunks = len(chunks)
+    all_successful = True
     for i, (chunk_text, parse_mode) in enumerate(chunks):
         print(f"Sende Chunk {i+1}/{total_chunks} (Mode: {parse_mode})...")
-        # Übergebe den spezifischen Parse-Modus (Markdown or None)
-        _send_telegram_message(url, chunk_text, chat_id, parse_mode=parse_mode)
-        time.sleep(1) # Kurze Pause zwischen den Nachrichten
+        
+        status = _send_telegram_message(url, chunk_text, chat_id, parse_mode=parse_mode)
+        
+        if status == "PARSE_ERROR":
+            # Markdown schlug fehl, versuche als reinen Text
+            print("Markdown-Fehler. Versuche Chunk erneut als reinen Text...")
+            status = _send_telegram_message(url, chunk_text, chat_id, parse_mode='None')
 
-    print("Alle Chunks erfolgreich gesendet.")
+        if status != True:
+            all_successful = False
 
+    if all_successful:
+        print("Alle Chunks erfolgreich gesendet.")
+    else:
+        print("!! FEHLER: Mindestens ein Chunk konnte nicht gesendet werden.")
 
 def _send_telegram_message(url, message_text, chat_id, parse_mode='Markdown'):
     """ 
-    Private Hilfsfunktion, die die eigentliche Sende-Anfrage durchführt.
-    Akzeptiert jetzt einen 'parse_mode'-Parameter.
+    Private Hilfsfunktion, die die Sende-Anfrage durchführt.
+    Gibt jetzt einen Status zurück: True (Erfolg), False (Fehler), 'PARSE_ERROR' (Spezialfehler)
     """
     payload = {
         'chat_id': chat_id,
@@ -233,18 +249,27 @@ def _send_telegram_message(url, message_text, chat_id, parse_mode='Markdown'):
         'disable_web_page_preview': True
     }
     
-    # Füge 'parse_mode' nur hinzu, wenn es 'Markdown' ist.
-    # Wenn 'parse_mode' 'None' ist, wird der Key weggelassen (reiner Text).
     if parse_mode == 'Markdown':
         payload['parse_mode'] = 'Markdown'
         
     try:
         response = requests.post(url, data=payload)
-        if response.status_code != 200:
-            # Wir loggen den Fehler, aber das Skript bricht nicht mehr ab
-            print(f"!! FEHLER beim Senden an Telegram: {response.status_code} {response.text}")
+        
+        if response.status_code == 200:
+            return True # Erfolg
+            
+        # --- Fehlerbehandlung ---
+        print(f"!! FEHLER beim Senden (Mode: {parse_mode}): {response.status_code} {response.text}")
+        
+        # Prüfe auf den spezifischen Markdown-Fehler
+        if "can't parse entities" in response.text:
+            return "PARSE_ERROR" # Spezial-Status für Fallback
+        
+        return False # Anderer Fehler
+        
     except Exception as e:
         print(f"!! FEHLER bei der Telegram-Anfrage: {e}")
+        return False
 
 # --------------------------------------------------------------------------
 # HAUPTAUSFÜHRUNG (Main Guard) - NEUE ORCHESTRIERUNGS-LOGIK
