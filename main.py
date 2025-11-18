@@ -8,7 +8,6 @@ from textwrap import dedent
 
 # --------------------------------------------------------------------------
 # SCHRITT 1: Konfiguration (API-Schlüssel)
-# (Keine Änderungen hier)
 # --------------------------------------------------------------------------
 try:
     GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
@@ -20,7 +19,6 @@ except KeyError as e:
 
 # --------------------------------------------------------------------------
 # SCHRITT 2: Deine Feed-Quellen
-# (Keine Änderungen hier)
 # --------------------------------------------------------------------------
 FEEDS = {
     "KI Allgemein (Global)": [
@@ -62,7 +60,6 @@ FEEDS = {
 
 # --------------------------------------------------------------------------
 # FUNKTION 1: News für eine KATEGORIE sammeln
-# (Dies ist eine NEUE, modularisierte Funktion)
 # --------------------------------------------------------------------------
 def collect_news_for_category(urls, category_name):
     """
@@ -107,19 +104,18 @@ def collect_news_for_category(urls, category_name):
     return "".join(rohtext_snippets)
 
 # --------------------------------------------------------------------------
-# FUNKTION 2: Mit Gemini KATEGORIE zusammenfassen (NEUE, STRIKTE VERSION)
+# FUNKTION 2: Mit Gemini KATEGORIE zusammenfassen (ROBUSTE VERSION 2.0)
 # --------------------------------------------------------------------------
 def summarize_category_with_gemini(raw_text, category_name):
     """
     Sendet den KATEGORIE-Rohtext an die Gemini API und bittet um eine Zusammenfassung.
-    NEU: Mit strikten Längen-Limits, um 4096-Zeichen-Fehler zu vermeiden.
+    NEU: Fängt "blocked prompt" Fehler von der API ab.
     """
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash') 
 
-        # === NEUER, STRIKTER PROMPT ===
-        # Dieser Prompt zwingt Gemini, sich kurz zu fassen.
+        # === STRIKTER PROMPT (unverändert) ===
         prompt = dedent(f"""
         Hallo Redakteur. Deine Aufgabe ist es, die News-Snippets für die Kategorie "{category_name}" zusammenzufassen.
 
@@ -142,16 +138,31 @@ def summarize_category_with_gemini(raw_text, category_name):
         {raw_text[:20000]} 
         ---
         """)
-        # WICHTIG: Ich kürze den INPUT-Text auf 20.000 Zeichen, falls du
-        # Hunderte von Artikeln findest. Das spart Tokens und verhindert API-Fehler.
 
         print(f"Sende Rohtext für {category_name} an Gemini API (Input gekürzt auf 20k Zeichen)...")
+        
+        # === NEUE FEHLERPRÜFUNG ===
         response = model.generate_content(prompt)
         
+        # Prüfen, ob die Antwort blockiert wurde, *bevor* wir auf .text zugreifen
+        if not response.candidates:
+            # Der Fall aus deinem Screenshot
+            block_reason = "Unbekannt"
+            if response.prompt_feedback:
+                 block_reason = response.prompt_feedback.block_reason
+            
+            error_msg = f"API-Antwort für '{category_name}' blockiert (Grund: {block_reason}). Sende Fallback-Text."
+            print(f"!! HINWEIS: {error_msg}")
+            
+            # Dies ist die saubere Nachricht, die stattdessen im Chat erscheint
+            return "*(Zusammenfassung für diese Kategorie wurde vom Inhaltsfilter der AI blockiert.)*"
+
+        # Wenn wir hier sind, ist alles gut
         print("Antwort von Gemini erhalten.")
-        return response.text
+        return response.text # Dieser Zugriff ist jetzt sicher
 
     except Exception as e:
+        # Generischer Fallback für alle *anderen* Fehler (z.B. API-Key ungültig)
         print(f"!! FEHLER bei der Gemini API: {e}")
         return f"Fehler bei der Erstellung der Zusammenfassung für {category_name}: {e}"
 # --------------------------------------------------------------------------
@@ -188,7 +199,7 @@ def send_to_telegram(message_text, chat_id=TELEGRAM_CHAT_ID, bot_token=TELEGRAM_
             print("!! FEHLER: Senden ist fehlgeschlagen.")
         return
 
-    # --- CHUNKING-LOGIK (bleibt gleich, aber mit besserem Logging) ---
+    # --- CHUNKING-LOGIK ---
     print(f"Nachricht ist zu lang ({len(full_message)} Zeichen). Starte 'Chunking'...")
     chunks = []
     current_chunk_text = ""
@@ -272,7 +283,7 @@ def _send_telegram_message(url, message_text, chat_id, parse_mode='Markdown'):
         return False
 
 # --------------------------------------------------------------------------
-# HAUPTAUSFÜHRUNG (Main Guard) - NEUE ORCHESTRIERUNGS-LOGIK
+# HAUPTAUSFÜHRUNG (Main Guard) 
 # --------------------------------------------------------------------------
 if __name__ == "__main__":
     print("Starte tägliches AI-Briefing Skript...")
